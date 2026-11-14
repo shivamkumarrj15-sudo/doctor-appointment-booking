@@ -16,6 +16,8 @@ import { PrivacyModal } from './components/PrivacyModal';
 import { recordEvent, getOrCreateSessionId } from './services/analytics';
 import { siteConfig } from './config/siteConfig';
 
+import { safeGetStorage, safeSetStorage } from './utils/storage';
+
 const FEEDBACK_SHOWN_SESSION_KEY = 'demo_feedback_prompt_shown';
 const FEEDBACK_SUBMITTED_SESSION_KEY = 'demo_feedback_submitted';
 
@@ -46,8 +48,8 @@ export function App() {
   // 2. 90-second Active Visible Website Time Feedback Trigger
   useEffect(() => {
     // Check if feedback already shown or submitted in this session
-    const alreadyShown = sessionStorage.getItem(FEEDBACK_SHOWN_SESSION_KEY) === 'true';
-    const alreadySubmitted = sessionStorage.getItem(FEEDBACK_SUBMITTED_SESSION_KEY) === 'true';
+    const alreadyShown = safeGetStorage(FEEDBACK_SHOWN_SESSION_KEY, 'session') === 'true';
+    const alreadySubmitted = safeGetStorage(FEEDBACK_SUBMITTED_SESSION_KEY, 'session') === 'true';
 
     if (alreadyShown || alreadySubmitted) {
       return;
@@ -66,14 +68,14 @@ export function App() {
 
           // Ensure we don't interrupt active booking form typing
           if (!isFormActiveRef.current) {
-            sessionStorage.setItem(FEEDBACK_SHOWN_SESSION_KEY, 'true');
+            safeSetStorage(FEEDBACK_SHOWN_SESSION_KEY, 'true', 'session');
             setIsAutomaticFeedback(true);
             setFeedbackModalOpen(true);
           } else {
             // Check again in 15 seconds if form was active
             const retryTimeout = setTimeout(() => {
-              if (!sessionStorage.getItem(FEEDBACK_SHOWN_SESSION_KEY)) {
-                sessionStorage.setItem(FEEDBACK_SHOWN_SESSION_KEY, 'true');
+              if (!safeGetStorage(FEEDBACK_SHOWN_SESSION_KEY, 'session')) {
+                safeSetStorage(FEEDBACK_SHOWN_SESSION_KEY, 'true', 'session');
                 setIsAutomaticFeedback(true);
                 setFeedbackModalOpen(true);
               }
@@ -93,7 +95,7 @@ export function App() {
   };
 
   const handleFeedbackSuccess = () => {
-    sessionStorage.setItem(FEEDBACK_SUBMITTED_SESSION_KEY, 'true');
+    safeSetStorage(FEEDBACK_SUBMITTED_SESSION_KEY, 'true', 'session');
     setFeedbackRefreshTrigger((prev) => prev + 1);
   };
 

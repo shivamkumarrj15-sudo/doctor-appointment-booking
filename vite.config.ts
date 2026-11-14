@@ -8,6 +8,5 @@ export default defineConfig({
     react(),
     tailwindcss(),
   ],
-  base: './', // Ensures relative asset paths for GitHub Pages hosting
+  base: '/doctor-appointment-booking/',
 })
-

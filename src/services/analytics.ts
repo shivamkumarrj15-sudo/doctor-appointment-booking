@@ -1,5 +1,6 @@
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { siteConfig } from '../config/siteConfig';
+import { safeGetStorage, safeSetStorage } from '../utils/storage';
 
 const SESSION_STORAGE_KEY = 'demo_anon_session_id';
 const LAST_ACTIVITY_KEY = 'demo_session_last_activity';
@@ -35,8 +36,12 @@ export interface EventMetadata {
  * Generates an anonymous RFC4122 v4 UUID.
  */
 function generateUUID(): string {
-  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-    return crypto.randomUUID();
+  try {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+      return crypto.randomUUID();
+    }
+  } catch {
+    // Fallback below
   }
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
     const r = (Math.random() * 16) | 0;
@@ -45,35 +50,42 @@ function generateUUID(): string {
   });
 }
 
+// In-memory session cache to avoid repeated disk reads or infinite loops
+let cachedSessionId: string | null = null;
+
 /**
  * Retrieves or establishes an anonymous first-party session identifier.
  * Automatically renews if inactive for > 30 minutes.
+ * NEVER calls recordEvent to prevent any possibility of recursive stack overflows.
  */
 export function getOrCreateSessionId(): string {
+  if (cachedSessionId) {
+    return cachedSessionId;
+  }
+
   const now = Date.now();
   const maxInactivityMs = siteConfig.analytics.inactivityTimeoutMinutes * 60 * 1000;
   
-  const lastActivityStr = localStorage.getItem(LAST_ACTIVITY_KEY);
-  let sessionId = sessionStorage.getItem(SESSION_STORAGE_KEY);
+  const lastActivityStr = safeGetStorage(LAST_ACTIVITY_KEY, 'local');
+  let sessionId = safeGetStorage(SESSION_STORAGE_KEY, 'session');
 
   if (lastActivityStr) {
     const lastActivity = parseInt(lastActivityStr, 10);
     if (!isNaN(lastActivity) && now - lastActivity > maxInactivityMs) {
       // Inactivity threshold reached (30 minutes) -> create new session
       sessionId = generateUUID();
-      sessionStorage.setItem(SESSION_STORAGE_KEY, sessionId);
-      recordEvent('session_start', { reason: 'inactivity_renewal' });
+      safeSetStorage(SESSION_STORAGE_KEY, sessionId, 'session');
     }
   }
 
   if (!sessionId) {
     sessionId = generateUUID();
-    sessionStorage.setItem(SESSION_STORAGE_KEY, sessionId);
-    recordEvent('session_start', { reason: 'initial_visit' });
+    safeSetStorage(SESSION_STORAGE_KEY, sessionId, 'session');
   }
 
   // Update activity timestamp
-  localStorage.setItem(LAST_ACTIVITY_KEY, now.toString());
+  safeSetStorage(LAST_ACTIVITY_KEY, now.toString(), 'local');
+  cachedSessionId = sessionId;
   return sessionId;
 }
 
@@ -81,14 +93,14 @@ export function getOrCreateSessionId(): string {
  * Checks if the visitor has opted out of anonymous analytics.
  */
 export function isAnalyticsOptedOut(): boolean {
-  return localStorage.getItem(ANALYTICS_OPT_OUT_KEY) === 'true';
+  return safeGetStorage(ANALYTICS_OPT_OUT_KEY, 'local') === 'true';
 }
 
 /**
  * Updates analytics opt-out preference.
  */
 export function setAnalyticsOptOut(optOut: boolean): void {
-  localStorage.setItem(ANALYTICS_OPT_OUT_KEY, optOut ? 'true' : 'false');
+  safeSetStorage(ANALYTICS_OPT_OUT_KEY, optOut ? 'true' : 'false', 'local');
 }
 
 /**
@@ -123,9 +135,13 @@ function sanitizeMetadata(metadata?: EventMetadata): Record<string, unknown> {
  * Checks for common crawler/bot user-agents.
  */
 function isBot(): boolean {
-  if (typeof navigator === 'undefined') return false;
-  const ua = navigator.userAgent.toLowerCase();
-  return /bot|crawler|spider|crawling|lighthouse|headlesschrome|googlebot|bingbot|yahoo|duckduckbot/i.test(ua);
+  try {
+    if (typeof navigator === 'undefined') return false;
+    const ua = navigator.userAgent.toLowerCase();
+    return /bot|crawler|spider|crawling|lighthouse|headlesschrome|googlebot|bingbot|yahoo|duckduckbot/i.test(ua);
+  } catch {
+    return false;
+  }
 }
 
 // Local in-memory session buffer for preview / local testing before Supabase credentials are configured
@@ -159,65 +175,60 @@ const localStats: LocalStats = {
 
 /**
  * Dispatches an analytics event in a non-blocking manner.
- * Never delays UI interactions or external WhatsApp navigation.
+ * Wrapped in try-catch so it can NEVER crash the main UI thread.
  */
 export function recordEvent(eventName: AnalyticsEventName, metadata?: EventMetadata): void {
-  if (isAnalyticsOptedOut() || isBot()) {
-    return;
-  }
-
-  const sessionId = getOrCreateSessionId();
-  const pagePath = typeof window !== 'undefined' ? window.location.pathname : '/';
-  const cleanMetadata = sanitizeMetadata(metadata);
-
-  // Update in-memory counters for local inspection / validation
-  localStats.sessions.add(sessionId);
-  if (eventName === 'page_view') localStats.pageViews++;
-  if (eventName === 'whatsapp_click') {
-    localStats.whatsappClicks++;
-    localStats.whatsappEnquirySessions.add(sessionId);
-  }
-  if (eventName === 'appointment_form_started') localStats.formStarts++;
-  if (eventName === 'appointment_form_completed') localStats.formCompletions++;
-  if (eventName === 'feedback_prompt_shown') localStats.feedbackPrompts++;
-  if (eventName === 'feedback_submitted') localStats.feedbackSubmissions++;
-  if (eventName === 'feedback_skipped') localStats.feedbackSkips++;
-  if (eventName === 'feedback_dismissed') localStats.feedbackDismissals++;
-  if (eventName === 'feedback_reason_submitted' && cleanMetadata.reason_selected) {
-    const r = String(cleanMetadata.reason_selected);
-    localStats.feedbackReasons[r] = (localStats.feedbackReasons[r] || 0) + 1;
-  }
-
-  // Non-blocking transmission to Supabase if configured
-  if (isSupabaseConfigured && supabase) {
-    // Non-blocking fire-and-forget
-    Promise.resolve(
-      supabase
-        .from('analytics_events')
-        .insert({
-          event_name: eventName,
-          session_id: sessionId,
-          page_path: pagePath,
-          event_metadata: cleanMetadata,
-        })
-    )
-      .then((res) => {
-        if (res && res.error) {
-          console.warn('[Analytics] Failed to persist event to Supabase:', res.error.message);
-        }
-      })
-      .catch((err: unknown) => {
-        console.warn('[Analytics] Network exception sending event:', err);
-      });
-  } else {
-    // Development / unconfigured notification
-    if (import.meta.env.DEV) {
-      console.debug(`[Analytics Event] ${eventName}`, {
-        sessionId,
-        pagePath,
-        metadata: cleanMetadata,
-      });
+  try {
+    if (isAnalyticsOptedOut() || isBot()) {
+      return;
     }
+
+    const sessionId = getOrCreateSessionId();
+    const pagePath = typeof window !== 'undefined' ? window.location.pathname : '/';
+    const cleanMetadata = sanitizeMetadata(metadata);
+
+    // Update in-memory counters for local inspection / validation
+    localStats.sessions.add(sessionId);
+    if (eventName === 'page_view') localStats.pageViews++;
+    if (eventName === 'whatsapp_click') {
+      localStats.whatsappClicks++;
+      localStats.whatsappEnquirySessions.add(sessionId);
+    }
+    if (eventName === 'appointment_form_started') localStats.formStarts++;
+    if (eventName === 'appointment_form_completed') localStats.formCompletions++;
+    if (eventName === 'feedback_prompt_shown') localStats.feedbackPrompts++;
+    if (eventName === 'feedback_submitted') localStats.feedbackSubmissions++;
+    if (eventName === 'feedback_skipped') localStats.feedbackSkips++;
+    if (eventName === 'feedback_dismissed') localStats.feedbackDismissals++;
+    if (eventName === 'feedback_reason_submitted' && cleanMetadata.reason_selected) {
+      const r = String(cleanMetadata.reason_selected);
+      localStats.feedbackReasons[r] = (localStats.feedbackReasons[r] || 0) + 1;
+    }
+
+    // Non-blocking transmission to Supabase if configured
+    if (isSupabaseConfigured && supabase) {
+      Promise.resolve(
+        supabase
+          .from('analytics_events')
+          .insert({
+            event_name: eventName,
+            session_id: sessionId,
+            page_path: pagePath,
+            event_metadata: cleanMetadata,
+          })
+      )
+        .then((res) => {
+          if (res && res.error) {
+            console.warn('[Analytics] Failed to persist event to Supabase:', res.error.message);
+          }
+        })
+        .catch((err: unknown) => {
+          console.warn('[Analytics] Network exception sending event:', err);
+        });
+    }
+  } catch (err) {
+    // Fail-safe: telemetry error must never affect the user experience
+    console.warn('[Analytics] Suppressed non-critical telemetry error:', err);
   }
 }
 
