@@ -1,0 +1,53 @@
+@import "tailwindcss";
+
+@theme {
+  --color-primary-navy: #17324D;
+  --color-navy-dark: #0f2235;
+  --color-navy-light: #23486d;
+  --color-healthcare-teal: #168C83;
+  --color-healthcare-teal-dark: #0f6760;
+  --color-healthcare-teal-light: #1ea398;
+  --color-soft-mint: #E8F5F1;
+  --color-warm-white: #FCFDFB;
+  --color-light-grey: #F3F6F7;
+  --color-main-text: #263746;
+  --color-secondary-text: #71808D;
+  --color-border-color: #E3E9EA;
+  --color-whatsapp-green: #25D366;
+  --color-whatsapp-dark: #128C7E;
+  --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+}
+
+:root {
+  color-scheme: light;
+}
+
+html {
+  scroll-behavior: smooth;
+  font-family: var(--font-sans);
+  background-color: #FCFDFB;
+  color: #263746;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: #FCFDFB;
+  color: #263746;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
